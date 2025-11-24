@@ -1,0 +1,5 @@
+{
+  "name": "Gestor de Expedientes Pro",
+  "description": "Una aplicación para la gestión de expedientes administrativos que integra OCR para la entrada de datos de clientes, seguimiento económico y una simulación de conexión con la plataforma HERMES de la DGT.",
+  "requestFramePermissions": []
+}
