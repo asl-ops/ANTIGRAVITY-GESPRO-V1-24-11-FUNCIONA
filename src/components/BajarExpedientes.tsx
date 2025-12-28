@@ -1,18 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { CaseRecord } from '@/types';
+import { CaseRecord, Communication } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/useToast';
-import { Download, Search, CheckSquare, Square, Loader } from 'lucide-react';
+import { AlertTriangle, Search, CheckSquare, Square, Loader, Lock } from 'lucide-react';
 
 const BajarExpedientes: React.FC = () => {
-    const { caseHistory } = useAppContext();
+    const { caseHistory, saveCase, currentUser } = useAppContext();
     const { addToast } = useToast();
 
     const [searchIdentifier, setSearchIdentifier] = useState('');
     const [searchResults, setSearchResults] = useState<CaseRecord[]>([]);
     const [selectedCases, setSelectedCases] = useState<Set<string>>(new Set());
     const [isSearching, setIsSearching] = useState(false);
-    const [isDownloading, setIsDownloading] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+
+    // Modal de confirmación
+    const [showConfirmModal, setShowConfirmModal] = useState(false);
+    const [passwordInput, setPasswordInput] = useState('');
+    const [passwordError, setPasswordError] = useState('');
+
+    const DELETION_PASSWORD = '1812';
 
     useEffect(() => {
         if (searchIdentifier.trim()) {
@@ -25,9 +32,9 @@ const BajarExpedientes: React.FC = () => {
     const handleSearch = () => {
         setIsSearching(true);
 
-        // Search by identifier (partial match)
+        // Search by client NIF/DNI/CIF (partial match) - exclude already deleted cases
         const results = caseHistory.filter(c =>
-            c.fileNumber.toLowerCase().includes(searchIdentifier.toLowerCase()) &&
+            c.client.nif?.toLowerCase().includes(searchIdentifier.toLowerCase()) &&
             c.status !== 'Eliminado'
         );
 
@@ -53,52 +60,81 @@ const BajarExpedientes: React.FC = () => {
         }
     };
 
-    const handleDownloadSelected = async () => {
+    const handleDeleteSelected = async () => {
         if (selectedCases.size === 0) {
             addToast('Selecciona al menos un expediente', 'error');
             return;
         }
 
-        setIsDownloading(true);
+        // Open password confirmation modal
+        setShowConfirmModal(true);
+        setPasswordInput('');
+        setPasswordError('');
+    };
+
+    const confirmDeletion = async () => {
+        // Verify password
+        if (passwordInput !== DELETION_PASSWORD) {
+            setPasswordError('Contraseña incorrecta');
+            return;
+        }
+
+        if (!currentUser) {
+            addToast('Error: Usuario no identificado', 'error');
+            return;
+        }
+
+        setIsDeleting(true);
+        setShowConfirmModal(false);
 
         try {
             // Get selected cases
-            const casesToDownload = searchResults.filter(c => selectedCases.has(c.fileNumber));
+            const casesToDelete = searchResults.filter(c => selectedCases.has(c.fileNumber));
 
-            // Create JSON export
-            const exportData = {
-                exportDate: new Date().toISOString(),
-                totalCases: casesToDownload.length,
-                cases: casesToDownload
-            };
+            // Update each case to "Eliminado" status
+            for (const caseRecord of casesToDelete) {
+                const auditLog: Communication = {
+                    id: `audit-${Date.now()}-${Math.random()}`,
+                    date: new Date().toISOString(),
+                    concept: `Expediente dado de baja por ${currentUser.name}`,
+                    authorUserId: currentUser.id
+                };
 
-            // Create blob and download
-            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `expedientes_${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
+                const updatedCase: CaseRecord = {
+                    ...caseRecord,
+                    status: 'Eliminado',
+                    communications: [...caseRecord.communications, auditLog],
+                    updatedAt: new Date().toISOString()
+                };
 
-            addToast(`${selectedCases.size} expediente(s) descargado(s)`, 'success');
+                await saveCase(updatedCase);
+            }
+
+            addToast(`${selectedCases.size} expediente(s) dado(s) de baja correctamente`, 'success');
             setSelectedCases(new Set());
+
+            // Refresh search results
+            handleSearch();
         } catch (error) {
-            console.error('Error downloading cases:', error);
-            addToast('Error al descargar expedientes', 'error');
+            console.error('Error deleting cases:', error);
+            addToast('Error al dar de baja expedientes', 'error');
         } finally {
-            setIsDownloading(false);
+            setIsDeleting(false);
         }
+    };
+
+    const cancelDeletion = () => {
+        setShowConfirmModal(false);
+        setPasswordInput('');
+        setPasswordError('');
     };
 
     return (
         <div className="space-y-6">
             {/* Header */}
             <div>
-                <h2 className="text-2xl font-bold text-slate-900">Bajar Expedientes</h2>
-                <p className="text-slate-600 mt-1">Busca y descarga expedientes por identificador</p>
+                <h2 className="text-2xl font-bold text-slate-900">Baja de Expedientes</h2>
+                <p className="text-slate-600 mt-1">Busca expedientes por DNI/CIF del cliente y dales de baja</p>
             </div>
 
             {/* Search */}
@@ -108,7 +144,7 @@ const BajarExpedientes: React.FC = () => {
                         <Search className="w-5 h-5 text-slate-400 mr-2" />
                         <input
                             type="text"
-                            placeholder="Buscar por identificador (ej: EXP-0001, GMAT-2024-001)..."
+                            placeholder="Buscar por DNI/CIF/NIF del cliente..."
                             value={searchIdentifier}
                             onChange={(e) => setSearchIdentifier(e.target.value)}
                             className="flex-1 bg-transparent outline-none text-slate-900"
@@ -140,19 +176,19 @@ const BajarExpedientes: React.FC = () => {
                             </span>
                         </div>
                         <button
-                            onClick={handleDownloadSelected}
-                            disabled={selectedCases.size === 0 || isDownloading}
-                            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                            onClick={handleDeleteSelected}
+                            disabled={selectedCases.size === 0 || isDeleting}
+                            className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-medium disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
                         >
-                            {isDownloading ? (
+                            {isDeleting ? (
                                 <>
                                     <Loader className="w-4 h-4 animate-spin" />
-                                    Descargando...
+                                    Dando de baja...
                                 </>
                             ) : (
                                 <>
-                                    <Download className="w-4 h-4" />
-                                    Bajar Seleccionados
+                                    <AlertTriangle className="w-4 h-4" />
+                                    Dar de Baja Seleccionados
                                 </>
                             )}
                         </button>
@@ -163,6 +199,7 @@ const BajarExpedientes: React.FC = () => {
                         <thead className="bg-slate-50 border-b border-slate-200">
                             <tr>
                                 <th className="w-12 px-6 py-3"></th>
+                                <th className="text-left px-6 py-3 text-sm font-semibold text-slate-700">Nº Expediente</th>
                                 <th className="text-left px-6 py-3 text-sm font-semibold text-slate-700">Identificador</th>
                                 <th className="text-left px-6 py-3 text-sm font-semibold text-slate-700">Cliente</th>
                                 <th className="text-left px-6 py-3 text-sm font-semibold text-slate-700">Prefijo</th>
@@ -174,19 +211,22 @@ const BajarExpedientes: React.FC = () => {
                             {searchResults.map(caseRecord => (
                                 <tr
                                     key={caseRecord.fileNumber}
-                                    className={`hover:bg-slate-50 cursor-pointer ${selectedCases.has(caseRecord.fileNumber) ? 'bg-indigo-50' : ''
+                                    className={`hover:bg-slate-50 cursor-pointer ${selectedCases.has(caseRecord.fileNumber) ? 'bg-red-50' : ''
                                         }`}
                                     onClick={() => toggleCase(caseRecord.fileNumber)}
                                 >
                                     <td className="px-6 py-4">
                                         {selectedCases.has(caseRecord.fileNumber) ? (
-                                            <CheckSquare className="w-5 h-5 text-indigo-600" />
+                                            <CheckSquare className="w-5 h-5 text-red-600" />
                                         ) : (
                                             <Square className="w-5 h-5 text-slate-400" />
                                         )}
                                     </td>
                                     <td className="px-6 py-4">
                                         <span className="font-medium text-slate-900">{caseRecord.fileNumber}</span>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <span className="font-mono text-slate-700">{caseRecord.client.nif || 'Sin DNI/CIF'}</span>
                                     </td>
                                     <td className="px-6 py-4">
                                         <span className="text-slate-700">
@@ -216,20 +256,82 @@ const BajarExpedientes: React.FC = () => {
             {/* Empty State */}
             {searchIdentifier && searchResults.length === 0 && !isSearching && (
                 <div className="bg-white rounded-xl shadow-md border border-slate-200 p-12 text-center">
-                    <p className="text-slate-500">No se encontraron expedientes con el identificador "{searchIdentifier}"</p>
+                    <p className="text-slate-500">No se encontraron expedientes con el DNI/CIF "{searchIdentifier}"</p>
                 </div>
             )}
 
             {/* Info */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h4 className="font-semibold text-blue-900 mb-2">💡 Cómo usar</h4>
-                <ul className="text-sm text-blue-800 space-y-1">
-                    <li>• Escribe el identificador completo o parcial del expediente</li>
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <h4 className="font-semibold text-red-900 mb-2">⚠️ Importante</h4>
+                <ul className="text-sm text-red-800 space-y-1">
+                    <li>• Escribe el DNI/CIF/NIF del cliente para buscar sus expedientes</li>
                     <li>• Selecciona uno o varios expedientes con los checkboxes</li>
-                    <li>• Haz clic en "Bajar Seleccionados" para descargar en formato JSON</li>
-                    <li>• Los expedientes se descargarán con todos sus datos completos</li>
+                    <li>• Al dar de baja, se requerirá una contraseña de confirmación (1812)</li>
+                    <li>• Los expedientes se marcarán como "Eliminado" en el sistema</li>
+                    <li>• Esta acción se registrará en el historial del expediente</li>
                 </ul>
             </div>
+
+            {/* Password Confirmation Modal */}
+            {showConfirmModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                                <Lock className="w-6 h-6 text-red-600" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900">Confirmar Baja de Expedientes</h3>
+                                <p className="text-sm text-slate-600">
+                                    Se darán de baja {selectedCases.size} expediente(s)
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                            <p className="text-sm text-red-800">
+                                Esta acción marcará los expedientes como eliminados. Los expedientes no se borrarán permanentemente.
+                            </p>
+                        </div>
+
+                        <div className="mb-4">
+                            <label className="block text-sm font-medium text-slate-700 mb-2">
+                                Contraseña de Confirmación *
+                            </label>
+                            <input
+                                type="password"
+                                value={passwordInput}
+                                onChange={(e) => {
+                                    setPasswordInput(e.target.value);
+                                    setPasswordError('');
+                                }}
+                                onKeyPress={(e) => e.key === 'Enter' && confirmDeletion()}
+                                placeholder="Ingresa la contraseña"
+                                className={`w-full border ${passwordError ? 'border-red-500' : 'border-slate-300'} rounded-lg px-3 py-2 focus:ring-2 focus:ring-red-500 focus:border-transparent`}
+                                autoFocus
+                            />
+                            {passwordError && (
+                                <p className="text-sm text-red-600 mt-1">{passwordError}</p>
+                            )}
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={confirmDeletion}
+                                className="flex-1 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+                            >
+                                Confirmar Baja
+                            </button>
+                            <button
+                                onClick={cancelDeletion}
+                                className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg font-medium transition-colors"
+                            >
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

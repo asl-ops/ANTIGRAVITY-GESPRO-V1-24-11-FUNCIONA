@@ -29,6 +29,9 @@ export const useHashRouter = () => {
         if (view === 'responsible') {
             return { currentView: 'responsible' as const, fileNumberParam: null, newCaseCategory: null };
         }
+        if (view === 'clients') {
+            return { currentView: 'clients' as const, fileNumberParam: null, newCaseCategory: null };
+        }
         return { currentView: 'dashboard' as const, fileNumberParam: null, newCaseCategory: null };
     }, [locationHash]);
 

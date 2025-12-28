@@ -11,17 +11,55 @@ const TEMPLATES_STORAGE_PATH = 'mandate-templates';
  */
 export const uploadTemplateFile = async (file: File): Promise<string> => {
     try {
+        console.log('[TemplateService] Starting file upload...', {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type
+        });
+
+        // Verificar que Firebase Storage está configurado
+        if (!storage) {
+            throw new Error('Firebase Storage no está inicializado');
+        }
+
         const timestamp = Date.now();
         const fileName = `${timestamp}_${file.name}`;
-        const storageRef = ref(storage, `${TEMPLATES_STORAGE_PATH}/${fileName}`);
+        const storagePath = `${TEMPLATES_STORAGE_PATH}/${fileName}`;
 
-        await uploadBytes(storageRef, file);
+        console.log('[TemplateService] Creating storage reference:', storagePath);
+        const storageRef = ref(storage, storagePath);
+
+        console.log('[TemplateService] Uploading file...');
+        const uploadResult = await uploadBytes(storageRef, file);
+        console.log('[TemplateService] Upload successful:', uploadResult.metadata.fullPath);
+
+        console.log('[TemplateService] Getting download URL...');
         const downloadURL = await getDownloadURL(storageRef);
+        console.log('[TemplateService] Download URL obtained:', downloadURL);
 
         return downloadURL;
-    } catch (error) {
-        console.error('Error uploading template file:', error);
-        throw error;
+    } catch (error: any) {
+        console.error('[TemplateService] Error uploading template file:', error);
+        console.error('[TemplateService] Error details:', {
+            code: error.code,
+            message: error.message,
+            serverResponse: error.serverResponse
+        });
+
+        // Proporcionar mensajes de error más descriptivos
+        if (error.code === 'storage/unauthorized') {
+            throw new Error('No tienes permisos para subir archivos. Verifica las reglas de Firebase Storage.');
+        } else if (error.code === 'storage/canceled') {
+            throw new Error('La subida fue cancelada.');
+        } else if (error.code === 'storage/unknown') {
+            throw new Error('Error desconocido de Firebase Storage. Verifica tu configuración.');
+        } else if (error.code === 'storage/retry-limit-exceeded') {
+            throw new Error('Tiempo de espera agotado. Verifica tu conexión a Internet.');
+        } else if (error.message?.includes('Firebase Storage')) {
+            throw error;
+        }
+
+        throw new Error(`Error al subir archivo: ${error.message || 'Error desconocido'}`);
     }
 };
 
@@ -168,6 +206,32 @@ export const updateTemplate = async (
         }, { merge: true });
     } catch (error) {
         console.error('Error updating template:', error);
+        throw error;
+    }
+};
+
+/**
+ * Replace template file with a new one
+ */
+export const replaceTemplateFile = async (
+    templateId: string,
+    newFile: File
+): Promise<void> => {
+    try {
+        console.log('[TemplateService] Replacing file for template:', templateId);
+
+        // Upload new file
+        const newFileUrl = await uploadTemplateFile(newFile);
+
+        // Update template with new file info
+        await updateTemplate(templateId, {
+            fileUrl: newFileUrl,
+            fileName: newFile.name
+        });
+
+        console.log('[TemplateService] File replaced successfully');
+    } catch (error) {
+        console.error('Error replacing template file:', error);
         throw error;
     }
 };

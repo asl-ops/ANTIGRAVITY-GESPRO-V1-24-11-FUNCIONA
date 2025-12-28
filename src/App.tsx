@@ -1,58 +1,69 @@
 import React, { useEffect, lazy, Suspense } from 'react';
 import { useAppContext } from '@/contexts/AppContext';
-import { useToast } from '@/hooks/useToast';
 import RemoteAccessInfo from '@/components/RemoteAccessInfo';
 import { useCaseManager } from '@/hooks/useCaseManager';
 import { useHashRouter } from '@/hooks/useHashRouter';
-import { FileCategory, CaseRecord, Client } from '@/types';
-import {
-  getInitialFileConfig, getFileNumber, getInitialVehicle, getInitialCommunicationsData
-} from '@/utils/initializers';
 
 const Dashboard = lazy(() => import('@/components/Dashboard'));
 const CaseDetailView = lazy(() => import('@/components/CaseDetailView'));
 const ResponsibleDashboard = lazy(() => import('@/components/ResponsibleDashboard'));
 const TasksDashboard = lazy(() => import('@/components/TasksDashboard'));
-const CreateCaseWizard = lazy(() => import('@/components/CreateCaseWizard'));
+const ClientExplorer = lazy(() => import('@/components/ClientExplorer'));
 
 const App: React.FC = () => {
   const {
     caseHistory, appSettings, currentUser, isLoading, initializationError,
-    deleteClient, saveCase, economicTemplates
+    deleteClient
   } = useAppContext();
-
-  const { addToast } = useToast();
   const { currentView, fileNumberParam, navigateTo } = useHashRouter();
 
   const {
-    client, setClient, vehicle, setVehicle, economicData, setEconomicData,
-    communications, setCommunications, attachments, setAttachments,
-    fileConfig, handleFileConfigChange, caseStatus, setCaseStatus,
-    tasks, createdAt, isClassifying, isBatchProcessing, isSaving,
+    client, setClient,
+    clienteId, setClienteId,
+    clientSnapshot, setClientSnapshot,
+    vehicle, setVehicle,
+    economicData, setEconomicData,
+    communications, setCommunications,
+    attachments, setAttachments,
+    fileConfig, handleFileConfigChange,
+    description, setDescription,
+    caseStatus, setCaseStatus,
+    tasks, createdAt,
+    isClassifying, isBatchProcessing, isSaving,
     clearForm, loadCaseData, handleSaveAndReturn, handleAddDocuments,
     handleUpdateTaskStatus
   } = useCaseManager();
 
   const [isRemoteAccessModalOpen, setIsRemoteAccessModalOpen] = React.useState(false);
-  const [isApiKeyWarningVisible, setApiKeyWarningVisible] = React.useState(false);
 
-  useEffect(() => {
-    const apiKey = (typeof process !== 'undefined' && process?.env) ? process.env.API_KEY : undefined;
-    if (!apiKey) setApiKeyWarningVisible(true);
-  }, []);
+
+  const loadedFileNumberRef = React.useRef<string | null>(null);
 
   useEffect(() => {
     if (currentView === 'detail') {
       if (fileNumberParam && fileNumberParam !== 'new') {
-        const caseToLoad = caseHistory.find(c => c.fileNumber === fileNumberParam);
-        if (caseToLoad) {
-          loadCaseData(caseToLoad);
+        // Solo cargar si el número de expediente ha cambiado en la URL
+        if (loadedFileNumberRef.current !== fileNumberParam) {
+          const caseToLoad = caseHistory.find(c => c.fileNumber === fileNumberParam);
+          if (caseToLoad) {
+            console.log('📬 Cargando datos del expediente:', fileNumberParam);
+            loadCaseData(caseToLoad);
+            loadedFileNumberRef.current = fileNumberParam;
+          }
         }
-      } else if (fileNumberParam === 'new' && !client.id) { // Only clear if it's a fresh 'new' case
-        clearForm();
+      } else if (fileNumberParam === 'new') {
+        // Solo limpiar si venimos de otra vista o de otro expediente
+        if (loadedFileNumberRef.current !== 'new') {
+          console.log('✨ Inicializando nuevo expediente');
+          clearForm();
+          loadedFileNumberRef.current = 'new';
+        }
       }
+    } else {
+      // Al salir de la vista de detalle, resetear el ref para permitir volver a cargar
+      loadedFileNumberRef.current = null;
     }
-  }, [currentView, fileNumberParam, loadCaseData, clearForm, client.id]);
+  }, [currentView, fileNumberParam, loadCaseData, clearForm, caseHistory]);
 
   const handleSelectCase = (fileNumber: string) => {
     navigateTo(`/detail/${fileNumber}`);
@@ -76,77 +87,55 @@ const App: React.FC = () => {
     </div>
   );
 
-  const handleWizardComplete = (category: FileCategory, selectedClient: Client) => {
-    if (!appSettings || !currentUser) {
-      addToast('Error: App settings or current user not available.', 'error');
-      return;
-    }
-    // Calculate new counter
-    const newCounter = (caseHistory.length > 0 ? Math.max(...caseHistory.map(c => parseInt(c.fileNumber.split('-')[1] || '0', 10))) : appSettings.fileCounter - 1) + 1;
 
-    const fileNumber = getFileNumber(newCounter);
-    const initialConfig = getInitialFileConfig(currentUser.id, category);
-
-    const economicLines = (economicTemplates[category] || [])
-      .filter(line => line.included)
-      .map(line => ({
-        id: `line_${Date.now()}_${Math.random()}`,
-        conceptId: `concept_${Date.now()}_${Math.random()}`, // Will be updated during migration
-        concept: line.concept,
-        type: 'honorario' as const, // Default type, will be refined later
-        amount: line.amount
-      }));
-
-    const newCase: CaseRecord = {
-      fileNumber: fileNumber,
-      client: selectedClient,
-      vehicle: getInitialVehicle(),
-      fileConfig: initialConfig,
-      economicData: { lines: economicLines, subtotalAmount: 0, vatAmount: 0, totalAmount: 0 }, // Recalc totals?
-      communications: getInitialCommunicationsData(currentUser.id),
-      attachments: [],
-      status: 'Pendiente Documentación',
-      tasks: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    // Save
-    saveCase(newCase).then(({ success }) => {
-      if (success) {
-        navigateTo(`/detail/${fileNumber}`);
-      } else {
-        addToast('Error creating new case.', 'error');
-      }
-    });
-  };
 
   const renderContent = () => {
     switch (currentView) {
       case 'dashboard':
-        return <Suspense fallback={loadingFallback}><Dashboard onSelectCase={handleSelectCase} onCreateNewCase={handleCreateNewCase} onShowRemoteAccess={() => setIsRemoteAccessModalOpen(true)} onShowTasksDashboard={() => navigateTo('/tasks')} onShowResponsibleDashboard={() => navigateTo('/responsible')} /></Suspense>;
+        return <Suspense fallback={loadingFallback}><Dashboard onSelectCase={handleSelectCase} onCreateNewCase={handleCreateNewCase} onShowResponsibleDashboard={() => navigateTo('/responsible')} /></Suspense>;
       case 'tasks':
         return <Suspense fallback={loadingFallback}><TasksDashboard onUpdateTaskStatus={handleUpdateTaskStatus} onGoToCase={(c) => handleSelectCase(c.fileNumber)} onReturnToDashboard={() => navigateTo('/')} /></Suspense>;
       case 'responsible':
-        return <Suspense fallback={loadingFallback}><ResponsibleDashboard /></Suspense>;
+        return <Suspense fallback={loadingFallback}><ResponsibleDashboard onReturnToDashboard={() => navigateTo('/')} /></Suspense>;
+      case 'clients':
+        return <Suspense fallback={loadingFallback}><ClientExplorer onClose={() => navigateTo('/')} /></Suspense>;
       case 'detail':
-        if (fileNumberParam === 'new') {
-          return <Suspense fallback={loadingFallback}><CreateCaseWizard onComplete={handleWizardComplete} onCancel={() => navigateTo('/')} /></Suspense>;
-        }
+        // Eliminado el wizard, siempre muestra CaseDetailView
         if (!fileNumberParam) return loadingFallback;
         return (
           <Suspense fallback={loadingFallback}>
             <CaseDetailView
-              client={client} setClient={setClient} vehicle={vehicle} setVehicle={setVehicle}
-              economicData={economicData} setEconomicData={setEconomicData} communications={communications}
-              setCommunications={setCommunications} attachments={attachments} setAttachments={setAttachments}
-              tasks={tasks} fileConfig={fileConfig} onFileConfigChange={handleFileConfigChange}
-              fileNumber={fileNumberParam} caseStatus={caseStatus} setCaseStatus={setCaseStatus}
-              onSaveAndReturn={onSaveAndReturnWrapper} onReturnToDashboard={() => navigateTo('/')}
-              onCreateNewCase={handleCreateNewCase}
-              onBatchVehicleProcessing={() => { }} isBatchProcessing={isBatchProcessing}
-              onAddDocuments={handleAddDocuments} isClassifying={isClassifying} isSaving={isSaving}
-              createdAt={createdAt} onDeleteClient={deleteClient}
+              client={client}
+              setClient={setClient}
+              clienteId={clienteId}
+              setClienteId={setClienteId}
+              clientSnapshot={clientSnapshot}
+              setClientSnapshot={setClientSnapshot}
+              vehicle={vehicle}
+              setVehicle={setVehicle}
+              economicData={economicData}
+              setEconomicData={setEconomicData}
+              communications={communications}
+              setCommunications={setCommunications}
+              attachments={attachments}
+              setAttachments={setAttachments}
+              tasks={tasks}
+              fileConfig={fileConfig}
+              onFileConfigChange={handleFileConfigChange}
+              fileNumber={fileNumberParam}
+              description={description}
+              setDescription={setDescription}
+              caseStatus={caseStatus}
+              setCaseStatus={setCaseStatus}
+              onSaveAndReturn={onSaveAndReturnWrapper}
+              onReturnToDashboard={() => navigateTo('/')}
+              onBatchVehicleProcessing={() => { }}
+              isBatchProcessing={isBatchProcessing}
+              onAddDocuments={handleAddDocuments}
+              isClassifying={isClassifying}
+              isSaving={isSaving}
+              createdAt={createdAt}
+              onDeleteClient={deleteClient}
             />
           </Suspense>
         );
@@ -178,11 +167,7 @@ const App: React.FC = () => {
 
   return (
     <>
-      {isApiKeyWarningVisible && (
-        <div className="bg-red-100 border-b-2 border-red-500 text-red-900 px-4 py-3 relative shadow-md" role="alert">
-          <p>La API Key de Gemini no está disponible.</p>
-        </div>
-      )}
+
       <RemoteAccessInfo isOpen={isRemoteAccessModalOpen} onClose={() => setIsRemoteAccessModalOpen(false)} />
       {renderContent()}
     </>

@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect } from 'react';
-import { Client, Vehicle, User, Task, CaseStatus, DEFAULT_CASE_STATUSES, getCaseStatusBadgeColor, getCaseStatusBorderColor, FileConfig, Communication, EconomicData, AttachedDocument, CaseRecord } from '../types';
+import React, { useState, useMemo, useCallback } from 'react';
+import { Client, Vehicle, Task, CaseStatus, FileConfig, Communication, EconomicData, AttachedDocument, CaseRecord, getCaseStatusBadgeColor, getCaseStatusBorderColor, Administrator } from '../types';
 import ClientDataSection from './ClientDataSection';
 import VehicleDataSection from './VehicleDataSection';
 import EconomicDataSection from './EconomicDataSection';
@@ -15,18 +15,31 @@ import AttachedDocumentsSection from './AttachedDocumentsSection';
 import AttachedDocumentsModal from './AttachedDocumentsModal';
 import TasksSection from './TasksSection';
 
-import MandatoAsuntoModal from './MandatoAsuntoModal';
+import GenerateMandateModal from './GenerateMandateModal';
+import AdministratorsModal from './AdministratorsModal';
 import { useAppContext } from '../contexts/AppContext';
 import { useToast } from '../hooks/useToast';
 import HelpSupportSection from './HelpSupportSection';
-import { generateMandatoPDF, generateMandatoDOCX } from '../services/documentService';
-import { getActiveTemplates } from '../services/templateService';
-import { MandateTemplate } from '../types';
-import AutoSaveIndicator from './AutoSaveIndicator';
-import { useAutoSave } from '../hooks/useAutoSave';
+import { prepareMandateData, generateMandatePDF, generateMandateFileName } from '../services/mandateService';
+import { MandateData } from '@/types/mandate';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { storage } from '../services/firebase';
 
 interface CaseDetailViewProps {
     client: Client; setClient: React.Dispatch<React.SetStateAction<Client>>;
+    clienteId?: string | null; setClienteId?: (id: string | null) => void;
+    clientSnapshot?: {
+        nombre: string;
+        documento?: string;
+        telefono?: string;
+        email?: string;
+    } | null;
+    setClientSnapshot?: (snapshot: {
+        nombre: string;
+        documento?: string;
+        telefono?: string;
+        email?: string;
+    } | null) => void;
     vehicle: Vehicle; setVehicle: React.Dispatch<React.SetStateAction<Vehicle>>;
     economicData: EconomicData; setEconomicData: React.Dispatch<React.SetStateAction<EconomicData>>;
     communications: Communication[]; setCommunications: React.Dispatch<React.SetStateAction<Communication[]>>;
@@ -34,10 +47,10 @@ interface CaseDetailViewProps {
     tasks: Task[];
     fileConfig: FileConfig; onFileConfigChange: (newConfig: FileConfig) => void;
     fileNumber: string;
+    description: string; setDescription: React.Dispatch<React.SetStateAction<string>>;
     caseStatus: CaseStatus; setCaseStatus: React.Dispatch<React.SetStateAction<CaseStatus>>;
     onSaveAndReturn: (tasks: Task[]) => Promise<void>;
     onReturnToDashboard: () => void;
-    onCreateNewCase?: (category: string) => void; // NEW: For "Nuevo Expediente" button
     onBatchVehicleProcessing: (files: File[]) => void;
     isBatchProcessing: boolean;
     onAddDocuments: (files: File[]) => void;
@@ -47,17 +60,12 @@ interface CaseDetailViewProps {
     onDeleteClient: (clientId: string) => Promise<void>;
 }
 
-const UserSwitcher: React.FC<{ users: User[], currentUser: User, onUserChange: (user: User) => void }> = ({ users, currentUser, onUserChange }) => (
-    <div className="flex items-center space-x-2 bg-white p-1 rounded-lg border border-slate-300">
-        <span className={`flex items-center justify-center h-7 w-7 rounded-md text-white text-sm font-bold ${currentUser.avatarColor}`}>{currentUser.initials}</span>
-        <select value={currentUser.id} onChange={(e) => { const u = users.find(u => u.id === e.target.value); if (u) onUserChange(u); }} className="bg-transparent border-0 rounded-md py-1 pl-2 pr-8 text-sm focus:outline-none focus:ring-0">
-            {users.map(user => (<option key={user.id} value={user.id}>{user.name}</option>))}
-        </select>
-    </div>
-);
+
 
 const CaseDetailView: React.FC<CaseDetailViewProps> = ({
     client, setClient,
+    clienteId, setClienteId,
+    clientSnapshot, setClientSnapshot,
     vehicle, setVehicle,
     economicData, setEconomicData,
     communications, setCommunications,
@@ -65,133 +73,156 @@ const CaseDetailView: React.FC<CaseDetailViewProps> = ({
     tasks: propTasks, // Renamed to avoid conflict with state variable
     fileConfig, onFileConfigChange,
     fileNumber,
+    description, setDescription,
     caseStatus, setCaseStatus,
     onSaveAndReturn,
     onReturnToDashboard,
-    onCreateNewCase,
     onBatchVehicleProcessing,
     isBatchProcessing,
     onAddDocuments,
     isSaving,
     createdAt
 }) => {
-    const { currentUser, users, setCurrentUser } = useAppContext();
+    const { currentUser, users, caseHistory, savedClients, saveClient } = useAppContext();
     const { addToast } = useToast();
 
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
     const [isHermesModalOpen, setIsHermesModalOpen] = useState(false);
     const [isDocumentsModalOpen, setIsDocumentsModalOpen] = useState(false);
     const [isMandatoModalOpen, setIsMandatoModalOpen] = useState(false);
+    const [isAdministratorsModalOpen, setIsAdministratorsModalOpen] = useState(false);
     const [mandatoAsunto, setMandatoAsunto] = useState('');
+    const [mandateData, setMandateData] = useState<MandateData | null>(null);
+    const [isGeneratingMandate, setIsGeneratingMandate] = useState(false);
     const [tasks, setTasks] = useState<Task[]>(propTasks || []);
 
+    // Detectar si el identificador es de persona jurídica (CIF)
+    const isLegalEntity = (nif: string): boolean => {
+        if (!nif || nif.length < 1) return false;
+        const firstChar = nif.charAt(0).toUpperCase();
+        return /^[ABCDEFGHJNPQRSUVW]/.test(firstChar);
+    };
+
+    // Handler para actualizar cliente con sincronización de administradores
+    const handleUpdateClientWithSync = useCallback(async (updatedClient: Client) => {
+        setClient(updatedClient);
+
+        // Si es persona jurídica y tiene NIF, sincronizar administradores globalmente
+        if (isLegalEntity(updatedClient.nif) && updatedClient.nif.length >= 9) {
+            const existingClient = savedClients.find(c => c.nif.toUpperCase() === updatedClient.nif.toUpperCase());
+            if (existingClient) {
+                // Actualizar el cliente guardado con los nuevos administradores
+                const syncedClient = { ...existingClient, administrators: updatedClient.administrators };
+                await saveClient(syncedClient);
+                addToast('Administradores sincronizados.', 'success');
+            } else if (updatedClient.surnames || updatedClient.firstName) {
+                // Si el cliente no existe pero tiene datos suficientes, guardarlo
+                const newClient = { ...updatedClient, id: `cli_${Date.now()}` };
+                await saveClient(newClient);
+                addToast('Cliente guardado con administradores.', 'success');
+            }
+        }
+    }, [savedClients, saveClient, setClient, addToast]);
+
+    const predictedFileNumber = useMemo(() => {
+        if (fileNumber !== 'new') return fileNumber;
+        if (!caseHistory || caseHistory.length === 0) return 'EXP-0001';
+
+        // Buscar el número máximo entre TODOS los expedientes, independientemente del prefijo
+        const allNumbers = caseHistory
+            .map(c => {
+                const match = c.fileNumber.match(/-(\d+)$/);
+                return match ? parseInt(match[1], 10) : 0;
+            })
+            .filter(num => num > 0);
+
+        if (allNumbers.length === 0) return 'EXP-0001';
+
+        const maxNumber = Math.max(...allNumbers);
+        const nextNum = maxNumber + 1;
+        return `EXP-${String(nextNum).padStart(4, '0')}`;
+    }, [fileNumber, caseHistory]);
+
     const handleOpenMandatoModal = () => {
-        const asuntoMap: { [key: string]: string[] } = { 'Transferencia': ['CAMBIO DE TITULARIDAD VEHICULO', 'PAGO IMPUESTO DE TRANSMISIONES'], 'Matriculación Nacional': ['MATRICULACIÓN VEHÍCULO NACIONAL'], 'Importación UE': ['MATRICULACIÓN VEHÍCULO IMPORTACIÓN UE'], 'Duplicado Permiso': ['DUPLICADO PERMISO DE CIRCULACIÓN'], 'Baja Definitiva': ['BAJA DEFINITIVA DEL VEHÍCULO'], 'Informe DGT': ['SOLICITUD INFORME DE TRÁFICO'] };
-        setMandatoAsunto((asuntoMap[fileConfig.fileType] || [fileConfig.fileType.toUpperCase()]).join('\n'));
+        const asuntoMap: { [key: string]: string[] } = {
+            'Transferencia': ['CAMBIO DE TITULARIDAD VEHICULO', 'PAGO IMPUESTO DE TRANSMISIONES'],
+            'Matriculación Nacional': ['MATRICULACIÓN VEHÍCULO NACIONAL'],
+            'Importación UE': ['MATRICULACIÓN VEHÍCULO IMPORTACIÓN UE'],
+            'Duplicado Permiso': ['DUPLICADO PERMISO DE CIRCULACIÓN'],
+            'Baja Definitiva': ['BAJA DEFINITIVA DEL VEHÍCULO'],
+            'Informe DGT': ['SOLICITUD INFORME DE TRÁFICO']
+        };
+        const defaultAsunto = (asuntoMap[fileConfig.fileType] || [fileConfig.fileType.toUpperCase()]).join('\n');
+        setMandatoAsunto(defaultAsunto);
+
+        // Preparar datos del mandato
+        if (appSettings) {
+            const data = prepareMandateData(client, defaultAsunto, '', appSettings);
+            setMandateData(data);
+        }
+
         setIsMandatoModalOpen(true);
     };
 
     const { appSettings } = useAppContext();
-    const [availableTemplates, setAvailableTemplates] = useState<MandateTemplate[]>([]);
-    const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
 
-    // Load templates when modal opens
-    useEffect(() => {
-        if (isMandatoModalOpen) {
-            loadTemplates();
-        }
-    }, [isMandatoModalOpen]);
+    const handleGenerateMandato = async (asuntoLinea1: string, asuntoLinea2: string, selectedAdminId?: string) => {
+        if (!currentUser || !appSettings) return;
 
-    const loadTemplates = async () => {
+        setIsGeneratingMandate(true);
+
         try {
-            const allTemplates = await getActiveTemplates();
-            // Filter: Global templates OR templates matching current case prefix
-            const relevantTemplates = allTemplates.filter(t =>
-                !t.prefixId || t.prefixId === fileConfig.category
+            // Buscar administrador si se seleccionó uno
+            let selectedAdmin: Administrator | undefined;
+            if (selectedAdminId && client.administrators) {
+                selectedAdmin = client.administrators.find(a => a.id === selectedAdminId);
+            }
+
+            // Preparar datos del mandato
+            const data = prepareMandateData(client, asuntoLinea1, asuntoLinea2, appSettings, selectedAdmin);
+
+            if (!data) {
+                addToast('No se ha configurado el mandatario. Ve al Panel del Responsable.', 'error');
+                setIsGeneratingMandate(false);
+                return;
+            }
+
+            // Generar PDF
+            const fileName = generateMandateFileName(
+                `${client.firstName} ${client.surnames}`,
+                fileNumber === 'new' ? predictedFileNumber : fileNumber
             );
-            setAvailableTemplates(relevantTemplates);
 
-            // Auto-select first relevant template
-            if (relevantTemplates.length > 0) {
-                setSelectedTemplateId(relevantTemplates[0].id);
-            }
-        } catch (error) {
-            console.error('Error loading templates:', error);
-            addToast('Error al cargar plantillas', 'error');
-        }
-    };
+            const pdfBlob = await generateMandatePDF('mandate-content', fileName);
 
-    const handleGenerateMandato = async (finalAsunto: string, format: 'docx' | 'pdf') => {
-        if (!currentUser) return;
+            // Subir a Firebase Storage
+            const storageRef = ref(storage, `mandates/${fileNumber}/${fileName}`);
+            await uploadBytes(storageRef, pdfBlob);
+            const downloadURL = await getDownloadURL(storageRef);
 
-        const data = {
-            CLIENT_FULL_NAME: `${client.firstName} ${client.surnames}`.trim(),
-            CLIENT_NIF: client.nif,
-            CLIENT_ADDRESS: `${client.address}, ${client.city}, ${client.postalCode}, ${client.province}`,
-            ASUNTO: finalAsunto,
-            GESTOR_NAME: currentUser.name,
-            GESTOR_DNI: appSettings?.agency?.managerDni || '__________________',
-            GESTOR_COLEGIADO_NUM: appSettings?.agency?.managerColegiado || '__________________',
-            GESTOR_DESPACHO: appSettings?.agency?.name || 'Gestoría',
-            GESTOR_DESPACHO_DIRECCION: appSettings?.agency?.address || '__________________',
-            CURRENT_CITY: appSettings?.agency?.address?.split(',')[1]?.trim() || 'Almería',
-            CURRENT_DAY: String(new Date().getDate()),
-            CURRENT_MONTH: new Date().toLocaleString('es-ES', { month: 'long' }),
-            CURRENT_YEAR: String(new Date().getFullYear()),
-        };
+            // Añadir como documento adjunto
+            const newAttachment = {
+                id: `mandate-${Date.now()}`,
+                name: fileName,
+                type: 'application/pdf',
+                size: pdfBlob.size,
+                status: 'synced' as const,
+                url: downloadURL,
+            };
 
-        try {
-            if (format === 'pdf') {
-                await generateMandatoPDF({
-                    data,
-                    fileName: `${fileNumber}_mandato.pdf`
-                });
-                addToast('Mandato PDF generado correctamente.', 'success');
-            } else {
-                // Find selected template
-                const selectedTemplate = availableTemplates.find(t => t.id === selectedTemplateId);
+            setAttachments(prev => [...prev, newAttachment]);
 
-                await generateMandatoDOCX({
-                    data,
-                    fileName: `${fileNumber}_mandato.docx`,
-                    templateUrl: selectedTemplate?.fileUrl // Pass template URL if selected
-                });
-                addToast('Mandato DOCX generado correctamente.', 'success');
-            }
-
+            addToast('Mandato generado y guardado correctamente', 'success');
             setIsMandatoModalOpen(false);
         } catch (error) {
-            addToast(`Error al generar el mandato (${format.toUpperCase()}).`, 'error');
-            console.error(error);
+            console.error('Error generando mandato:', error);
+            addToast('Error al generar el mandato', 'error');
+        } finally {
+            setIsGeneratingMandate(false);
         }
     };
 
-    // Auto-save hook
-    const currentCaseData: Partial<CaseRecord> = {
-        fileNumber,
-        client,
-        vehicle,
-        fileConfig,
-        economicData,
-        communications,
-        attachments,
-        status: caseStatus,
-        tasks
-    };
 
-    const autoSave = useAutoSave({
-        fileNumber,
-        userId: currentUser?.id || '',
-        data: currentCaseData,
-        enabled: !!currentUser && fileNumber !== 'new',
-        interval: 30000, // 30 seconds
-        onSave: () => {
-            // Optional: could show a subtle notification
-        },
-        onError: (error) => {
-            console.error('Auto-save failed:', error);
-        }
-    });
 
     if (!currentUser) return <div className="min-h-screen flex items-center justify-center"><SpinnerIcon /></div>;
 
@@ -202,51 +233,106 @@ const CaseDetailView: React.FC<CaseDetailViewProps> = ({
         updatedAt: new Date().toISOString(),
     };
 
+    // Lógica para selectores de cabecera
+    const FALLBACK_STATUSES = ['Pendiente Documentación', 'En Tramitación', 'Finalizado', 'Archivado'];
+    const availableStatuses = (appSettings?.caseStatuses && appSettings.caseStatuses.length > 0) ? appSettings.caseStatuses : FALLBACK_STATUSES;
+    const responsibleUser = users.find(u => u.id === fileConfig.responsibleUserId);
+
+    const handleResponsibleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        onFileConfigChange({ ...fileConfig, responsibleUserId: e.target.value });
+    };
+
     return (
         <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-8">
             <div className="max-w-7xl mx-auto">
                 <header className="mb-8">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-3">
-                            <button onClick={onReturnToDashboard} className="p-2 text-slate-600 hover:text-sky-600" title="Volver">
-                                <ArrowLeftIcon />
-                            </button>
-                            <HeaderIcon />
-                            <div className="flex items-center">
-                                <span className="text-3xl font-bold text-slate-900">Expediente:</span>
-                                <span className="ml-2 font-bold text-3xl text-sky-600">{fileNumber}</span>
-                            </div>
-                            {onCreateNewCase && (
-                                <button
-                                    onClick={() => {
-                                        if (isSaving || confirm('¿Deseas crear un nuevo expediente? Los cambios no guardados se perderán.')) {
-                                            onCreateNewCase?.('GE-MAT');
-                                        }
-                                    }}
-                                    className="ml-4 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-medium transition-colors text-sm"
-                                >
-                                    + Nuevo Expediente
-                                </button>
-                            )}
+                    <div className="flex items-center space-x-3">
+                        <button
+                            onClick={onReturnToDashboard}
+                            className="flex items-center gap-2 px-3 py-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors"
+                            title="Volver al Dashboard"
+                        >
+                            <ArrowLeftIcon />
+                            <span className="text-sm font-medium">Volver</span>
+                        </button>
+                        <HeaderIcon />
+                        <div className="flex items-baseline space-x-2">
+                            <span className="text-3xl font-bold text-slate-900">Expediente:</span>
+                            <span className="font-bold text-3xl text-sky-600">
+                                {fileNumber === 'new' ? predictedFileNumber : fileNumber}
+                            </span>
                         </div>
-                        <div className="flex items-center space-x-4">
-                            <AutoSaveIndicator
-                                status={autoSave.status}
-                                lastSaved={autoSave.lastSaved}
-                                onSaveNow={autoSave.saveNow}
-                                onClearDraft={autoSave.clearDraft}
-                                hasUnsavedChanges={autoSave.hasUnsavedChanges}
-                            />
-                            <UserSwitcher users={users} currentUser={currentUser} onUserChange={setCurrentUser} />
-                            <div className="flex items-center space-x-2">
-                                <label htmlFor="caseStatus" className="text-sm font-medium">Estado:</label>
+                        <div className="flex items-center gap-2 ml-4">
+                            <span className="text-sm font-medium text-slate-600">-</span>
+                            <select
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-sky-500 focus:border-sky-500 transition-all bg-white"
+                            >
+                                <option value="">Seleccionar descripción...</option>
+                                {fileConfig.category === 'FI-TRI' && (
+                                    <>
+                                        <option value="1T">Primer Trimestre</option>
+                                        <option value="2T">Segundo Trimestre</option>
+                                        <option value="3T">Tercer Trimestre</option>
+                                        <option value="4T">Cuarto Trimestre</option>
+                                    </>
+                                )}
+                                {fileConfig.category === 'FI-CONTA' && (
+                                    <>
+                                        <option value="Anual">Contabilidad Anual</option>
+                                        <option value="Mensual">Contabilidad Mensual</option>
+                                        <option value="Trimestral">Contabilidad Trimestral</option>
+                                    </>
+                                )}
+                                {fileConfig.category === 'GE-MAT' && (
+                                    <>
+                                        <option value="Matriculación">Matriculación</option>
+                                        <option value="Transferencia">Transferencia</option>
+                                        <option value="Baja">Baja de Vehículo</option>
+                                        <option value="Duplicado">Duplicado de Documentación</option>
+                                        <option value="Cambio Titular">Cambio de Titular</option>
+                                    </>
+                                )}
+                            </select>
+
+                            {/* Situación Actual */}
+                            <div className="ml-4">
+                                {availableStatuses.length > 0 ? (
+                                    <select
+                                        value={caseStatus}
+                                        onChange={(e) => setCaseStatus(e.target.value as CaseStatus)}
+                                        className={`px-3 py-1.5 text-sm border rounded-lg shadow-sm font-semibold focus:outline-none focus:ring-2 ${getCaseStatusBadgeColor(caseStatus)} ${getCaseStatusBorderColor(caseStatus)}`}
+                                    >
+                                        {availableStatuses.map(status => (
+                                            <option key={status} value={status}>{status}</option>
+                                        ))}
+                                    </select>
+                                ) : (
+                                    <input
+                                        type="text"
+                                        value={caseStatus}
+                                        onChange={(e) => setCaseStatus(e.target.value as CaseStatus)}
+                                        className="px-3 py-1.5 border border-slate-300 rounded-lg shadow-sm focus:ring-sky-500 focus:border-sky-500 text-sm"
+                                    />
+                                )}
+                            </div>
+
+                            {/* Gestor Responsable */}
+                            <div className="flex items-center space-x-2 ml-4">
+                                {responsibleUser && (
+                                    <span className={`flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-lg text-white text-xs font-bold shadow-sm ${responsibleUser.avatarColor}`}>
+                                        {responsibleUser.initials}
+                                    </span>
+                                )}
                                 <select
-                                    id="caseStatus"
-                                    value={caseStatus}
-                                    onChange={(e) => setCaseStatus(e.target.value as CaseStatus)}
-                                    className={`font-semibold py-1 px-2 rounded-md border text-sm focus:ring-0 outline-none ${getCaseStatusBadgeColor(caseStatus)} ${getCaseStatusBorderColor(caseStatus)}`}
+                                    value={fileConfig.responsibleUserId}
+                                    onChange={handleResponsibleChange}
+                                    className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-sky-500 focus:border-sky-500 transition-all bg-white"
                                 >
-                                    {DEFAULT_CASE_STATUSES.map(s => (<option key={s} value={s}>{s}</option>))}
+                                    {users.map(user => (
+                                        <option key={user.id} value={user.id}>{user.name}</option>
+                                    ))}
                                 </select>
                             </div>
                         </div>
@@ -254,47 +340,61 @@ const CaseDetailView: React.FC<CaseDetailViewProps> = ({
                 </header>
                 <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <div className="lg:col-span-2 space-y-8">
-                        <ClientDataSection client={client} setClient={setClient} onDocumentProcessed={(f) => onAddDocuments([f])} />
+                        <ClientDataSection
+                            client={client}
+                            setClient={setClient}
+                            clienteId={clienteId}
+                            setClienteId={setClienteId}
+                            clientSnapshot={clientSnapshot}
+                            setClientSnapshot={setClientSnapshot}
+                            onDocumentProcessed={(f) => onAddDocuments([f])}
+                        />
                         <VehicleDataSection vehicle={vehicle} setVehicle={setVehicle} fileType={fileConfig.fileType} onBatchProcess={onBatchVehicleProcessing} isBatchProcessing={isBatchProcessing} onDocumentProcessed={(f) => onAddDocuments([f])} />
                         <EconomicDataSection economicData={economicData} setEconomicData={setEconomicData} />
                         <TasksSection tasks={tasks} setTasks={setTasks} users={users} currentUser={currentUser} caseResponsibleUserId={fileConfig.responsibleUserId} attachments={attachments} fileConfig={fileConfig} client={client} />
                         <CommunicationsSection communications={communications} setCommunications={setCommunications} currentUser={currentUser} users={users} client={client} />
                     </div>
                     <div className="lg:col-span-1 space-y-8">
-                        <FileConfigSection fileConfig={fileConfig} onFileConfigChange={onFileConfigChange} onOpenSettings={() => setIsSettingsModalOpen(true)} users={users} caseStatus={caseStatus} setCaseStatus={setCaseStatus} onOpenMandatoModal={handleOpenMandatoModal} />
+                        <FileConfigSection
+                            fileConfig={fileConfig}
+                            onFileConfigChange={onFileConfigChange}
+                            onOpenSettings={() => setIsSettingsModalOpen(true)}
+                            client={client}
+                            onOpenAdministratorsModal={() => setIsAdministratorsModalOpen(true)}
+                        />
                         <HermesIntegrationSection onOpen={() => setIsHermesModalOpen(true)} />
                         <AttachedDocumentsSection onOpen={() => setIsDocumentsModalOpen(true)} />
-                        <DocumentGeneratorSection client={client} vehicle={vehicle} economicData={economicData} communications={communications} attachments={attachments} fileNumber={fileNumber} fileConfig={fileConfig} tasks={tasks} users={users} onOpenMandatoModal={handleOpenMandatoModal} caseStatus={caseStatus} createdAt={createdAt} />
+                        <DocumentGeneratorSection client={client} vehicle={vehicle} economicData={economicData} communications={communications} attachments={attachments} fileNumber={fileNumber} fileConfig={fileConfig} tasks={tasks} users={users} onOpenMandatoModal={handleOpenMandatoModal} caseStatus={caseStatus} createdAt={createdAt} onAddDocuments={onAddDocuments} />
                         <HelpSupportSection />
                         <div className="bg-white p-6 rounded-xl shadow-md">
                             <h3 className="text-lg font-semibold mb-4">Acciones</h3>
-                            <button onClick={() => onSaveAndReturn(tasks)} disabled={isSaving} className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center disabled:bg-sky-400 mb-3">
+                            <button onClick={() => onSaveAndReturn(tasks)} disabled={isSaving} className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center disabled:bg-sky-400">
                                 {isSaving ? <><SpinnerIcon /> <span className="ml-2">Guardando...</span></> : 'Guardar y Volver'}
                             </button>
-
-                            {onCreateNewCase && (
-                                <button
-                                    onClick={() => onCreateNewCase(fileConfig.category)}
-                                    className="w-full bg-white border-2 border-sky-600 text-sky-600 hover:bg-sky-50 font-bold py-2 px-4 rounded-lg flex items-center justify-center transition-colors"
-                                >
-                                    <span className="mr-2">+</span> Nuevo Expediente
-                                </button>
-                            )}
                         </div>
                     </div>
                 </main>
                 {isSettingsModalOpen && <SettingsModal isOpen={isSettingsModalOpen} onClose={() => setIsSettingsModalOpen(false)} />}
                 {isHermesModalOpen && <HermesConfigModal isOpen={isHermesModalOpen} onClose={() => setIsHermesModalOpen(false)} caseRecord={currentCaseDataForModal} />}
                 {isDocumentsModalOpen && <AttachedDocumentsModal isOpen={isDocumentsModalOpen} onClose={() => setIsDocumentsModalOpen(false)} attachments={attachments} setAttachments={setAttachments} onAddDocuments={onAddDocuments} fileNumber={fileNumber} />}
-                {isMandatoModalOpen && (
-                    <MandatoAsuntoModal
+                {isMandatoModalOpen && mandateData && (
+                    <GenerateMandateModal
                         isOpen={isMandatoModalOpen}
                         onClose={() => setIsMandatoModalOpen(false)}
-                        initialAsunto={mandatoAsunto}
-                        onConfirm={handleGenerateMandato}
-                        templates={availableTemplates}
-                        selectedTemplateId={selectedTemplateId}
-                        onSelectTemplate={setSelectedTemplateId}
+                        client={client}
+                        fileNumber={fileNumber === 'new' ? predictedFileNumber : fileNumber}
+                        defaultAsunto={mandatoAsunto}
+                        mandateData={mandateData}
+                        onGenerate={handleGenerateMandato}
+                        isGenerating={isGeneratingMandate}
+                    />
+                )}
+                {isAdministratorsModalOpen && (
+                    <AdministratorsModal
+                        isOpen={isAdministratorsModalOpen}
+                        onClose={() => setIsAdministratorsModalOpen(false)}
+                        client={client}
+                        onUpdateClient={handleUpdateClientWithSync}
                     />
                 )}
                 <footer className="text-center mt-12 text-slate-500 text-sm"><p>&copy; {new Date().getFullYear()} Gestor de Expedientes Pro.</p></footer>

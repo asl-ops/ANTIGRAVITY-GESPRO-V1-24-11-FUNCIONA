@@ -2,7 +2,28 @@ import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { Client, Vehicle, Communication, User, Task } from "@/types";
 
 // Initialize GoogleGenerativeAI with API key
-const genAI = new GoogleGenerativeAI(process.env.API_KEY as string);
+// Initialize GoogleGenerativeAI with API key
+const getApiKey = () => {
+  const key = process.env.API_KEY ||
+    ((import.meta as any).env && (import.meta as any).env.VITE_GEMINI_API_KEY) ||
+    ((import.meta as any).env && (import.meta as any).env.VITE_API_KEY) ||
+    ((import.meta as any).env && (import.meta as any).env.NEXT_PUBLIC_GEMINI_API_KEY) ||
+    '';
+  return key;
+};
+
+const apiKey = getApiKey();
+
+if (!apiKey) {
+  console.error("CRITICAL: Gemini API Key is missing. OCR features will not work.");
+  console.error("Please configure VITE_GEMINI_API_KEY in your .env file or build environment.");
+} else if (apiKey.startsWith('PLAC') || apiKey.includes('PLACEHOLDER')) {
+  console.warn("WARNING: Gemini API Key appears to be a placeholder. OCR features will fail.");
+} else {
+  console.log("Gemini API Key initialized successfully (ends with ...", apiKey.slice(-4), ")");
+}
+
+const genAI = new GoogleGenerativeAI(apiKey);
 
 const fileToGenerativePart = async (file: File) => {
   return new Promise<{ inlineData: { data: string; mimeType: string } }>((resolve, reject) => {
@@ -24,16 +45,22 @@ const fileToGenerativePart = async (file: File) => {
 
 const handleGeminiError = (error: any, context: string): Error => {
   console.error(`Error calling Gemini API for ${context}:`, error);
-  if (error.message && /api key/i.test(error.message)) {
-    return new Error("Error con la API Key de Gemini. Revisa que sea correcta y esté disponible.");
+  if (!apiKey) {
+    return new Error("Error: API Key no configurada. Revisa tu archivo .env o la configuración del servidor.");
   }
-  return new Error(`Error al ${context}. Inténtalo de nuevo.`);
+  if (apiKey.startsWith('PLAC') || apiKey.includes('PLACEHOLDER')) {
+    return new Error("Error de configuración: Estás usando una API Key de ejemplo. Configura una clave válida en .env");
+  }
+  if (error.message && /api key/i.test(error.message)) {
+    return new Error("Error de autenticación con Gemini. La API Key puede ser inválida o haber expirado.");
+  }
+  return new Error(`Error al ${context}. Detalles: ${error.message || 'Desconocido'}`);
 };
 
 export const extractDataFromImage = async (file: File) => {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.0-flash-exp",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -66,7 +93,7 @@ export const extractDataFromImage = async (file: File) => {
 export const extractVehicleDataFromImage = async (file: File) => {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.0-flash-exp",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -103,7 +130,7 @@ export const classifyAndRenameDocument = async (
 ) => {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.0-flash-exp",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -154,7 +181,7 @@ export const getGroundedAnswer = async (query: string) => {
     // For simplicity in this refactor, we'll use the standard model without explicit tools 
     // unless we are sure about the tool configuration in this SDK version.
     // However, let's try to keep it simple for now.
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
     const result = await model.generateContent(query);
     const response = await result.response;
@@ -174,7 +201,7 @@ export const summarizeCommunications = async (
   client: Client
 ) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
     const log = communications.map(c => {
       const author = users.find(u => u.id === c.authorUserId)?.name || "Usuario";
@@ -193,7 +220,7 @@ export const summarizeCommunications = async (
 
 export const draftCommunication = async (intent: string, clientName: string) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
     const prompt = `Genera un email profesional y amable para el cliente ${clientName}.
     Motivo del mensaje: ${intent}.
@@ -214,7 +241,7 @@ export const suggestTasks = async (
 ) => {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.0-flash-exp",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {

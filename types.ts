@@ -1,6 +1,14 @@
 
 import type { Dispatch, SetStateAction } from 'react';
 
+// 🆕 Importar nuevos tipos de cliente centralizados
+export type { Client as ClientV2, ClientSnapshot, ClientType, ClientStatus } from './src/types/client';
+
+/**
+ * @deprecated Cliente embebido en expediente (antiguo sistema)
+ * Mantener temporalmente para backward compatibility
+ * Usar ClientV2 + clienteId para nuevos desarrollos
+ */
 export interface Client {
   id: string;
   surnames: string;
@@ -28,7 +36,7 @@ export interface EconomicData {
 }
 
 export interface Vehicle {
-  id?: string; 
+  id?: string;
   vin: string;
   brand: string;
   model: string;
@@ -46,9 +54,9 @@ export interface Communication {
 
 // Configuración de campos dinámicos
 export interface FieldDefinition {
-    id: string;
-    label: string;
-    options: string[]; // Opciones del desplegable
+  id: string;
+  label: string;
+  options: string[]; // Opciones del desplegable
 }
 
 export type FileCategory = 'GE-MAT' | 'FI-TRI' | 'FI-CONTA';
@@ -76,7 +84,7 @@ export interface AttachedDocument {
   size: number;
   file?: File;
   status: DocumentStatus;
-  url?: string; 
+  url?: string;
 }
 
 export interface User {
@@ -92,7 +100,7 @@ export interface Task {
   isCompleted: boolean;
   assignedToUserId: string;
   createdByUserId: string;
-  createdAt: string; 
+  createdAt: string;
 }
 
 export type CaseStatus = string; // Ahora es dinámico, string base
@@ -128,7 +136,14 @@ export const getCaseStatusBorderColor = (status: string): string => {
 
 export interface CaseRecord {
   fileNumber: string;
+
+  // 🔄 SISTEMA NUEVO: Referencia centralizada a cliente
+  clienteId?: string | null;              // ID de referencia (única fuente de verdad)
+  clientSnapshot?: ClientSnapshot | null;  // Cache/histórico para listados rápidos
+
+  // ⚠️ DEPRECADO: Cliente embebido (mantener para backward compatibility)
   client: Client;
+
   vehicle: Vehicle;
   fileConfig: FileConfig;
   economicData: EconomicData;
@@ -138,17 +153,19 @@ export interface CaseRecord {
   tasks: Task[];
   createdAt: string;
   updatedAt: string;
+  closedAt?: string;
+  situation?: string;
 }
 
 export interface ToastMessage {
-    id: number;
-    message: string;
-    type: 'success' | 'error' | 'info' | 'warning';
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'info' | 'warning';
 }
 
 export interface CaseSelection {
-    nif: string;
-    cases: CaseRecord[];
+  nif: string;
+  cases: CaseRecord[];
 }
 
 export interface TemplateEconomicLineItem {
@@ -160,13 +177,13 @@ export interface TemplateEconomicLineItem {
 export type EconomicTemplates = Record<string, TemplateEconomicLineItem[]>;
 
 export interface AppSettings {
-    fileCounter: number;
-    generalSavePath: string;
-    mandatoBody: string;
-    // Configuración de campos dinámicos por categoría
-    fieldConfigs: Record<FileCategory, FieldDefinition[]>;
-    // Estados configurables del expediente
-    caseStatuses: string[];
-    // Tipos de expediente configurables (Categoría -> Lista de Subtipos)
-    fileTypes: Record<FileCategory, string[]>;
+  fileCounter: number;
+  generalSavePath: string;
+  mandatoBody: string;
+  // Configuración de campos dinámicos por categoría
+  fieldConfigs: Record<FileCategory, FieldDefinition[]>;
+  // Estados configurables del expediente
+  caseStatuses: string[];
+  // Tipos de expediente configurables (Categoría -> Lista de Subtipos)
+  fileTypes: Record<FileCategory, string[]>;
 }

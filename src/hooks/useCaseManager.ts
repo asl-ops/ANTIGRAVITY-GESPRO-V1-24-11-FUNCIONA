@@ -22,12 +22,20 @@ export const useCaseManager = () => {
     const { addToast } = useToast();
 
     const [client, setClient] = useState<Client>(getInitialClient());
+    const [clienteId, setClienteId] = useState<string | null>(null);
+    const [clientSnapshot, setClientSnapshot] = useState<{
+        nombre: string;
+        documento?: string;
+        telefono?: string;
+        email?: string;
+    } | null>(null);
     const [vehicle, setVehicle] = useState<Vehicle>(getInitialVehicle());
     const [economicData, setEconomicData] = useState<EconomicData>(getInitialEconomicData());
     const [communications, setCommunications] = useState<Communication[]>([]);
     const [attachments, setAttachments] = useState<AttachedDocument[]>([]);
     const [fileConfig, setFileConfig] = useState<FileConfig>({ fileType: '', category: 'GE-MAT', responsibleUserId: '', customValues: {} });
     const [fileNumber, setFileNumber] = useState('');
+    const [description, setDescription] = useState<string>('');  // Nueva descripción del expediente
     const [caseStatus, setCaseStatus] = useState<CaseStatus>('Pendiente Documentación');
     const [tasks, setTasks] = useState<Task[]>([]);
     const [createdAt, setCreatedAt] = useState<string>('');
@@ -56,6 +64,8 @@ export const useCaseManager = () => {
     const clearForm = useCallback((newCounter?: number, category?: FileCategory | null) => {
         if (!currentUser) return;
         setClient(getInitialClient());
+        setClienteId(null);
+        setClientSnapshot(null);
         setVehicle(getInitialVehicle());
         setCommunications(getInitialCommunicationsData(currentUser.id));
         setAttachments([]);
@@ -68,6 +78,7 @@ export const useCaseManager = () => {
         }
 
         setCaseStatus('Pendiente Documentación');
+        setDescription('');  // Limpiar descripción
         if (newCounter !== undefined) {
             setFileNumber(getFileNumber(newCounter));
         }
@@ -77,6 +88,8 @@ export const useCaseManager = () => {
     const loadCaseData = useCallback((caseToLoad: CaseRecord) => {
         setFileNumber(caseToLoad.fileNumber);
         setClient(caseToLoad.client);
+        setClienteId(caseToLoad.clienteId || null);
+        setClientSnapshot(caseToLoad.clientSnapshot || null);
         setVehicle(caseToLoad.vehicle);
         // Asegurar compatibilidad con expedientes antiguos que no tengan categoría
         setFileConfig({
@@ -88,36 +101,91 @@ export const useCaseManager = () => {
         setCommunications(caseToLoad.communications);
         setAttachments(caseToLoad.attachments || []);
         setCaseStatus(caseToLoad.status);
+        setDescription(caseToLoad.description || '');  // Cargar descripción
         setTasks(caseToLoad.tasks || []);
         setCreatedAt(caseToLoad.createdAt);
     }, []);
 
     const handleSaveAndReturn = async (currentTasks: Task[]) => {
         if (!currentUser) return false;
-        const clientName = client.surnames || client.firstName;
-        if (!client.nif || !clientName) {
-            addToast('Se requieren datos de cliente (Nombre/Apellidos e Identificador) para guardar.', 'error');
+
+        // Determinar si tenemos datos suficientes (nombre e identificador)
+        const name = clientSnapshot?.nombre || client.surnames || client.firstName;
+        const hasIdentifier = !!clienteId || !!client.nif;
+
+        if (!name || !hasIdentifier) {
+            addToast('Se requieren datos de cliente (Nombre e Identificador/DNI) para guardar.', 'error');
             return false;
         }
 
         setIsSaving(true);
 
-        const currentCaseData: CaseRecord = {
-            fileNumber, client, vehicle, fileConfig, economicData, communications,
-            attachments, status: caseStatus, tasks: currentTasks,
-            createdAt: createdAt || new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        };
+        try {
+            let finalFileNumber = fileNumber;
+            if (!finalFileNumber || finalFileNumber === 'new') {
+                // Buscar el número máximo entre TODOS los expedientes
+                const allNumbers = caseHistory
+                    .map(c => {
+                        const match = c.fileNumber.match(/-(\d+)$/);
+                        return match ? parseInt(match[1], 10) : 0;
+                    })
+                    .filter(num => num > 0);
 
-        const { success } = await saveCase(currentCaseData);
-        if (success) {
-            if (clientName && client.nif && !savedClients.some((c: Client) => c.nif === client.nif)) {
-                const newClient = { ...client, id: `cli_${Date.now()} ` };
-                await saveClient(newClient);
+                const maxNumber = allNumbers.length > 0 ? Math.max(...allNumbers) : 0;
+                const newCounter = maxNumber + 1;
+                finalFileNumber = getFileNumber(newCounter);
+                setFileNumber(finalFileNumber);
             }
+
+            const currentCaseData: CaseRecord = {
+                fileNumber: finalFileNumber,
+                client,
+                clienteId,  // 🆕 Guardar referencia a cliente
+                clientSnapshot,  // 🆕 Guardar snapshot del cliente
+                vehicle,
+                fileConfig,
+                description,
+                economicData,
+                communications,
+                attachments,
+                status: caseStatus,
+                tasks: currentTasks,
+                createdAt: createdAt || new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            };
+
+            // Función auxiliar para limpiar undefined de objetos (Firestore no los acepta)
+            const cleanUndefined = (obj: any): any => {
+                const newObj: any = Array.isArray(obj) ? [] : {};
+                Object.keys(obj).forEach(key => {
+                    const value = obj[key];
+                    if (value === undefined) return;
+                    if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+                        newObj[key] = cleanUndefined(value);
+                    } else {
+                        newObj[key] = value;
+                    }
+                });
+                return newObj;
+            };
+
+            const cleanCaseData = cleanUndefined(currentCaseData);
+
+            const { success } = await saveCase(cleanCaseData);
+            if (success) {
+                if (name && client.nif && !savedClients.some((c: Client) => c.nif === client.nif)) {
+                    const newClient = { ...client, id: `cli_${Date.now()} ` };
+                    await saveClient(newClient);
+                }
+            }
+            return success;
+        } catch (error) {
+            console.error('Error al guardar expediente:', error);
+            addToast('Error inesperado al guardar el expediente', 'error');
+            return false;
+        } finally {
+            setIsSaving(false);
         }
-        setIsSaving(false);
-        return success;
     };
 
     const handleAddDocuments = useCallback(async (files: File[]) => {
@@ -186,12 +254,15 @@ export const useCaseManager = () => {
 
     return {
         client, setClient,
+        clienteId, setClienteId,
+        clientSnapshot, setClientSnapshot,
         vehicle, setVehicle,
         economicData, setEconomicData,
         communications, setCommunications,
         attachments, setAttachments,
         fileConfig, setFileConfig, handleFileConfigChange,
         fileNumber,
+        description, setDescription,  // Exportar descripción
         caseStatus, setCaseStatus,
         tasks, setTasks,
         createdAt,

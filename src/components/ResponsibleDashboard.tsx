@@ -7,8 +7,13 @@ import ConceptCatalogManager from './ConceptCatalogManager';
 import TemplateManager from './TemplateManager';
 import BajarExpedientes from './BajarExpedientes';
 import AnalyticsDashboard from './AnalyticsDashboard';
+import MandateConfiguration from './MandateConfiguration';
 
-const ResponsibleDashboard: React.FC = () => {
+interface ResponsibleDashboardProps {
+    onReturnToDashboard?: () => void;
+}
+
+const ResponsibleDashboard: React.FC<ResponsibleDashboardProps> = ({ onReturnToDashboard }) => {
     const { appSettings, economicTemplates, updateSettings, updateEconomicTemplates, caseHistory } = useAppContext();
 
     const [agency, setAgency] = useState<AgencyData>({
@@ -81,60 +86,84 @@ const ResponsibleDashboard: React.FC = () => {
                     Panel del Responsable
                 </h1>
                 <button
-                    onClick={() => window.history.back()}
+                    onClick={onReturnToDashboard || (() => window.history.back())}
                     className="flex items-center gap-2 text-slate-600 hover:text-slate-800 px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 transition-colors"
                 >
                     <ArrowLeft className="w-4 h-4" />
-                    Volver
+                    Volver al Dashboard
                 </button>
             </div>
 
             <div className="flex gap-4 mb-6 border-b border-slate-200 overflow-x-auto">
                 <button
                     onClick={() => setActiveTab('agency')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'agency'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Datos del Despacho
                 </button>
                 <button
                     onClick={() => setActiveTab('prefixes')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'prefixes'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Gestión de Prefijos
                 </button>
                 <button
                     onClick={() => setActiveTab('concepts')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'concepts'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Catálogo de Conceptos
                 </button>
                 <button
                     onClick={() => setActiveTab('economics')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'economics'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Gestión de Expedientes
                 </button>
                 <button
                     onClick={() => setActiveTab('mandate')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'mandate'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Configuración de Mandatos
                 </button>
                 <button
                     onClick={() => setActiveTab('templates')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'templates'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Plantillas de Mandatos
                 </button>
                 <button
                     onClick={() => setActiveTab('bajar')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'bajar'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Baja de Expedientes
                 </button>
                 <button
                     onClick={() => setActiveTab('analytics')}
-                    className={}
+                    className={`px-4 py-2 font-medium transition-colors ${activeTab === 'analytics'
+                        ? 'text-sky-700 border-b-2 border-sky-700'
+                        : 'text-slate-600 hover:text-slate-900'
+                        }`}
                 >
                     Analítica
                 </button>
@@ -220,7 +249,7 @@ const ResponsibleDashboard: React.FC = () => {
             {activeTab === 'economics' && (
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 animate-fade-in">
                     <h2 className="text-xl font-semibold mb-4 text-slate-700">Gestión de Expedientes</h2>
-                    
+
                     <div className="mb-6">
                         <label className="block text-sm font-medium text-slate-700 mb-2">Seleccionar Tipo de Expediente</label>
                         <select
@@ -290,15 +319,7 @@ const ResponsibleDashboard: React.FC = () => {
                 </div>
             )}
 
-            {activeTab === 'mandate' && (
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 animate-fade-in">
-                    <h2 className="text-xl font-semibold mb-4 text-slate-700">Configuración de Mandatos</h2>
-                    <p className="text-slate-600 mb-4">
-                        Aquí podrás configurar las plantillas y opciones para la generación de mandatos.
-                        (Funcionalidad en desarrollo)
-                    </p>
-                </div>
-            )}
+            {activeTab === 'mandate' && <MandateConfiguration />}
         </div>
     );
 };

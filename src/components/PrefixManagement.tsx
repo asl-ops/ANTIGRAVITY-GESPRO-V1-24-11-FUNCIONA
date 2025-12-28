@@ -45,7 +45,16 @@ const PrefixManagement: React.FC = () => {
         }
 
         try {
-            await createPrefix(formCode.trim(), formDescription.trim());
+            const newPrefix: PrefixConfig = {
+                id: `prefix_${Date.now()}`,
+                code: formCode.trim(),
+                description: formDescription.trim(),
+                isActive: true,
+                lines: [],
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            await createPrefix(newPrefix);
             addToast('Prefijo creado correctamente', 'success');
             setFormCode('');
             setFormDescription('');

@@ -29,9 +29,20 @@ async function createDefaultPrefixes(concepts: ConceptCatalog[]): Promise<Map<Fi
     for (const prefixDef of DEFAULT_PREFIXES) {
         console.log(`Creating prefix: ${prefixDef.code}...`);
 
-        // Create prefix
-        const prefix = await createPrefix(prefixDef.code, prefixDef.description);
-        categoryToPrefixId.set(prefixDef.category, prefix.id);
+        // Create prefix object
+        const prefixId = `prefix_${Date.now()}_${prefixDef.code}`;
+        const newPrefix = {
+            id: prefixId,
+            code: prefixDef.code,
+            description: prefixDef.description,
+            isActive: true,
+            lines: [],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+
+        await createPrefix(newPrefix);
+        categoryToPrefixId.set(prefixDef.category, prefixId);
 
         // Add default lines based on category
         const lines: PrefixLine[] = [];
@@ -95,7 +106,7 @@ async function createDefaultPrefixes(concepts: ConceptCatalog[]): Promise<Map<Fi
 
         // Update prefix with lines
         await savePrefix({
-            ...prefix,
+            ...newPrefix,
             lines
         });
 

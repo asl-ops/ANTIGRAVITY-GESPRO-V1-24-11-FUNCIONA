@@ -1,83 +1,105 @@
-
 import React from 'react';
 import { CaseRecord, getCaseStatusBadgeColor } from '../types';
-import { TrashIcon, UserIcon } from './icons';
+import { getStatusRowColorClasses } from '../utils/statusColors';
 
 interface ExpedienteListItemProps {
-  caseRecord: CaseRecord;
-  onSelectCase: (caseRecord: CaseRecord) => void;
-  onDelete: (fileNumber: string) => void;
+    caseRecord: CaseRecord;
+    onSelectCase: (caseRecord: CaseRecord) => void;
 }
 
-const ExpedienteListItem: React.FC<ExpedienteListItemProps> = ({ caseRecord, onSelectCase, onDelete }) => {
-  const { fileNumber, client, vehicle, status, fileConfig, createdAt } = caseRecord;
+const ExpedienteListItem: React.FC<ExpedienteListItemProps & { isSelected: boolean; onToggleSelection: (fileNumber: string) => void }> = ({
+    caseRecord,
+    onSelectCase,
+    isSelected,
+    onToggleSelection
+}) => {
+    const { fileNumber, status, fileConfig, createdAt, client, situation, closedAt } = caseRecord;
 
-  const categoryLabel = fileConfig.category || 'GE-MAT';
-  const fileTypeLabel = fileConfig.fileType || 'General';
-  
-  const formatDate = (dateStr: string) => {
-      try { return new Date(dateStr).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' }); } 
-      catch { return 'N/A'; }
-  };
+    return (
+        <div className={`grid grid-cols-[auto_1fr_1fr_3fr_1fr_1fr_1fr_1fr_2fr] gap-2 p-3 text-sm cursor-pointer transition-colors border-b ${getStatusRowColorClasses(status)} ${isSelected ? 'bg-blue-50' : ''}`}
+            onClick={() => onSelectCase(caseRecord)}
+        >
+            {/* Checkbox Selection */}
+            <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleSelection(fileNumber)}
+                    className="w-4 h-4 text-sky-600 rounded border-gray-300 focus:ring-sky-500"
+                />
+            </div>
 
-  return (
-    <div 
-        className="grid grid-cols-12 gap-4 px-4 py-3 items-center hover:bg-sky-50 transition-colors group cursor-pointer border-b border-slate-100 last:border-0"
-        onClick={() => onSelectCase(caseRecord)}
-    >
-        
-        {/* COL 1-2: ID Expediente */}
-        <div className="col-span-2 flex flex-col justify-center overflow-hidden">
-            <span className="font-bold text-sm text-sky-600 font-mono truncate group-hover:text-sky-700 transition-colors">{fileNumber}</span>
-            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{categoryLabel}</span>
-        </div>
-        
-        {/* COL 3-5: Cliente / Titular */}
-        <div className="col-span-3 flex items-center gap-2 overflow-hidden">
-          <div className="flex-shrink-0 text-slate-400"><UserIcon /></div>
-          <div className="overflow-hidden min-w-0">
-            <p className="font-semibold text-slate-800 text-sm truncate" title={`${client.surnames}, ${client.firstName}`}>
-                {client.surnames} {client.firstName}
-            </p>
-            <p className="text-xs text-slate-500 truncate font-mono">{client.nif}</p>
-          </div>
-        </div>
-        
-        {/* COL 6-8: Modalidad / Vehículo */}
-        <div className="col-span-3 flex flex-col justify-center overflow-hidden min-w-0">
-           <p className="text-sm text-slate-700 truncate font-medium" title={fileTypeLabel}>{fileTypeLabel}</p>
-           {vehicle.brand ? (
-               <p className="text-xs text-slate-500 truncate" title={`${vehicle.brand} ${vehicle.model} ${vehicle.vin}`}>{vehicle.brand} {vehicle.model} <span className="text-slate-400">({vehicle.vin?.slice(-4)})</span></p>
-           ) : (
-               <p className="text-xs text-slate-400 italic">Sin detalle vehículo</p>
-           )}
-        </div>
-        
-        {/* COL 9-10: Estado */}
-        <div className="col-span-2 flex items-center">
-            <span className={`px-2.5 py-1 text-[10px] uppercase font-bold rounded-full truncate block w-full text-center border shadow-sm ${getCaseStatusBadgeColor(status)}`}>
-                {status}
-            </span>
-        </div>
-        
-        {/* COL 11: Fecha */}
-        <div className="col-span-1 text-xs text-slate-600 font-mono text-center">
-            {formatDate(createdAt)}
-        </div>
+            {/* Tipo */}
+            <div className="truncate" title={fileConfig.category}>{fileConfig.category}</div>
 
-        {/* COL 12: Acciones */}
-        <div className="col-span-1 flex items-center justify-end gap-2">
-            <button 
-                onClick={(e) => { e.stopPropagation(); onDelete(fileNumber); }} 
-                className="p-2 text-slate-300 hover:bg-red-100 hover:text-red-600 rounded-full transition-colors opacity-0 group-hover:opacity-100" 
-                title="Eliminar expediente"
-            >
-                <TrashIcon />
-            </button>
-        </div>
+            {/* EXPEDIENTE */}
+            <div className="font-mono font-semibold text-sky-600 truncate" title={fileNumber}>{fileNumber}</div>
 
-    </div>
-  );
+            {/* Cliente */}
+            <div className="text-slate-700 truncate" title={
+                caseRecord.clientSnapshot?.nombre ||
+                `${client.surnames} ${client.firstName}` ||
+                '—'
+            }>
+                {caseRecord.clientSnapshot?.nombre ||
+                    `${client.surnames} ${client.firstName}` ||
+                    '—'}
+            </div>
+
+            {/* FECHA DE APERTURA */}
+            <div className="text-slate-600 text-xs flex items-center justify-center">
+                <span>{new Date(createdAt).toLocaleDateString()}</span>
+            </div>
+
+            {/* FECHA DE CIERRLast login: Sat Nov 29 21:29:41 on ttys001
+antoniosanchez@Mac-mini-de-Antonio ~ % cd "~/Downloads/gestor-de-expedientes-pro VS CODE"
+cd: no such file or directory: ~/Downloads/gestor-de-expedientes-pro VS CODE
+antoniosanchez@Mac-mini-de-Antonio ~ % bash scripts/fix-and-install.sh
+bash: scripts/fix-and-install.sh: No such file or directory
+antoniosanchez@Mac-mini-de-Antonio ~ % npm run prepare
+npm error code ENOENT
+npm error syscall open
+npm error path /Users/antoniosanchez/package.json
+npm error errno -2
+npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/Users/antoniosanchez/package.json'
+npm error enoent This is related to npm not being able to find a file.
+npm error enoent
+npm error A complete log of this run can be found in: /Users/antoniosanchez/.npm/_logs/2025-11-29T20_32_12_922Z-debug-0.log
+antoniosanchez@Mac-mini-de-Antonio ~ % 
+
+
+
+
+
+
+E */}
+            <div className="text-slate-600 text-xs flex items-center justify-center">
+                {status === 'Cerrado' && closedAt ? (
+                    <span>{new Date(closedAt).toLocaleDateString()}</span>
+                ) : null}
+            </div>
+
+            {/* Saldo */}
+            <div className="text-slate-700 font-semibold flex items-center justify-end pr-4" title={`${caseRecord.economicData.totalAmount.toFixed(2)} €`}>
+                {new Intl.NumberFormat('es-ES', {
+                    style: 'currency',
+                    currency: 'EUR'
+                }).format(caseRecord.economicData.totalAmount)}
+            </div>
+
+            {/* Situación */}
+            <div className="text-sm text-slate-700 truncate" title={situation || 'Iniciado'}>
+                {situation || 'Iniciado'}
+            </div>
+
+            {/* Estado */}
+            <div className="">
+                <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getCaseStatusBadgeColor(status)}`}>
+                    {status}
+                </span>
+            </div>
+        </div>
+    );
 };
 
 export default ExpedienteListItem;

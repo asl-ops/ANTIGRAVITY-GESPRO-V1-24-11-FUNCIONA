@@ -1,5 +1,13 @@
+import { MandatarioConfig } from './mandate';
 
 
+export interface Administrator {
+  id: string;
+  firstName: string;
+  surnames: string;
+  nif: string;
+  position?: string;
+}
 
 export interface Client {
   id: string;
@@ -12,6 +20,7 @@ export interface Client {
   postalCode: string;
   phone: string;
   email: string;
+  administrators?: Administrator[];
 }
 
 export interface EconomicLineItem {
@@ -176,6 +185,8 @@ export interface AppSettings {
     templateByPrefix: Record<string, string>; // prefixId -> templateId
     globalTemplate?: string;
   };
+  // Configuración del mandatario para generación de mandatos
+  mandatarioConfig?: MandatarioConfig;
 }
 
 // --- FIN CONFIGURACIÓN DINÁMICA ---
@@ -218,10 +229,12 @@ export interface Task {
 export type CaseStatus = string; // Dinámico
 
 export const DEFAULT_CASE_STATUSES: string[] = [
+  'Iniciado',
   'Pendiente Documentación',
   'En Tramitación',
   'Pendiente Pago',
   'Finalizado',
+  'Cerrado',
   'Archivado',
   'Eliminado',
 ];
@@ -247,10 +260,22 @@ export const getCaseStatusBorderColor = (status: string): string => {
 
 export interface CaseRecord {
   fileNumber: string;
+
+  // 🔄 SISTEMA NUEVO: Referencia centralizada a cliente
+  clienteId?: string | null;              // ID de referencia (única fuente de verdad)
+  clientSnapshot?: {                      // Cache/histórico para listados rápidos
+    nombre: string;
+    documento?: string;
+    telefono?: string;
+  } | null;
+
+  // ⚠️ DEPRECADO: Cliente embebido (mantener para backward compatibility)
   client: Client;
+
   vehicle: Vehicle;
   fileConfig: FileConfig;
   prefixId?: string;         // PHASE 2: New prefix-based system (optional during migration)
+  description?: string;      // Descripción del expediente y su razón de ser
   economicData: EconomicData;
   communications: Communication[];
   status: string;
@@ -258,6 +283,8 @@ export interface CaseRecord {
   tasks: Task[];
   createdAt: string;
   updatedAt: string;
+  closedAt?: string;
+  situation?: string;
 }
 
 export interface ToastMessage {

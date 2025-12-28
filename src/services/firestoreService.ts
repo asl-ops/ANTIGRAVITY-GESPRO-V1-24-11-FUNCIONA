@@ -1,7 +1,7 @@
 
 import { db } from './firebase';
-import { collection, doc, getDocs, getDoc, setDoc, writeBatch, deleteDoc } from 'firebase/firestore';
-import { CaseRecord, Client, EconomicTemplates, AppSettings, Vehicle, DEFAULT_CASE_STATUSES } from '@/types';
+import { collection, doc, getDocs, getDoc, setDoc, writeBatch, deleteDoc, query, where } from 'firebase/firestore';
+import { CaseRecord, Client, EconomicTemplates, AppSettings, Vehicle, DEFAULT_CASE_STATUSES, FileCategory } from '@/types';
 import { INITIAL_ECONOMIC_TEMPLATES } from './templates';
 import { DEFAULT_MANDATO_BODY } from './templateContent';
 
@@ -14,6 +14,15 @@ const templatesDoc = doc(db, 'economicTemplates', 'default');
 
 export const getCaseHistory = async (): Promise<CaseRecord[]> => {
     const snapshot = await getDocs(caseCollection);
+    return snapshot.docs.map(doc => doc.data() as CaseRecord);
+};
+
+/**
+ * 🆕 Obtiene expedientes de un cliente específico (sistema centralizado)
+ */
+export const getCasesByClientId = async (clientId: string): Promise<CaseRecord[]> => {
+    const q = query(caseCollection, where('clienteId', '==', clientId));
+    const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => doc.data() as CaseRecord);
 };
 
@@ -45,24 +54,144 @@ export const deleteCase = async (fileNumber: string): Promise<CaseRecord[]> => {
     return getCaseHistory();
 };
 
-export const saveMultipleCases = async (newCases: CaseRecord[]): Promise<CaseRecord[]> => {
+export const saveMultipleCases = async (cases: CaseRecord[]): Promise<CaseRecord[]> => {
     const batch = writeBatch(db);
     const now = new Date().toISOString();
 
-    const serializableNewCases = newCases.map(caseRecord => ({
-        ...caseRecord,
-        createdAt: now,
-        updatedAt: now,
-        attachments: caseRecord.attachments.map(({ file, ...rest }) => rest),
-    }));
+    const serializableCases = cases.map(caseRecord => {
+        // Create a shallow copy to modify
+        const docData = { ...caseRecord };
 
-    serializableNewCases.forEach(c => {
+        // Handle attachments (strip file objects)
+        docData.attachments = caseRecord.attachments.map(({ file, ...rest }) => rest);
+
+        // Update timestamps
+        docData.updatedAt = now;
+        // Only set createdAt if it doesn't exist (handle new cases vs updates)
+        if (!docData.createdAt) {
+            docData.createdAt = now;
+        }
+
+        // Sanitize undefined values (Firestore doesn't like them)
+        Object.keys(docData).forEach(key => {
+            const k = key as keyof CaseRecord;
+            if (docData[k] === undefined) {
+                delete docData[k];
+            }
+        });
+
+        return docData;
+    });
+
+    serializableCases.forEach(c => {
         const docRef = doc(db, 'cases', c.fileNumber);
         batch.set(docRef, c);
     });
 
     await batch.commit();
     return getCaseHistory();
+};
+
+export const getNextFileNumber = async (_category: string): Promise<string> => {
+    const allCases = await getCaseHistory();
+    // Filter by category if needed, but usually numbering is global or per type. 
+    // The requirement says "assign automatically the next correlative number available for that type of expedient".
+    // Assuming the prefix (e.g. EXP) might change or just the number.
+    // Let's assume a global sequence for simplicity unless prefixes differ significantly.
+    // However, the user mentioned "Type: RECLAMACION" -> "last number for that Type".
+    // So we should filter by the prefix associated with the type or just the type itself if the number includes it.
+    // Current implementation uses "EXP-XXXX". 
+    // If the user wants different prefixes per type, we need to know them.
+    // For now, I will implement a logic that looks for the highest number in the current format "EXP-XXXX" 
+    // OR if the user wants specific prefixes per type, I'll need to map them.
+    // Looking at the codebase, `getPrefixes` exists in `prefixService`.
+    // But the user prompt says: "Input (Tipo)... Consulta... último número correlativo asignado para el 'Tipo: RECLAMACION'".
+    // This implies the numbering might be scoped by type.
+    // Let's look at existing file numbers. They seem to be 'EXP-0001'.
+    // I will implement a generic finder that looks for the pattern and increments.
+
+    // Actually, looking at the prompt again: "N_nuevo = N_último + 1".
+    // And "Generación: ... con el N_nuevo y el 'Tipo: GE-MAT'".
+    // This suggests the number is just a number, maybe with a prefix.
+    // I'll stick to the existing 'EXP-' prefix for now but make it robust.
+
+    // Wait, if I filter by type, and different types share the "EXP-" prefix, we might have collisions if we don't check GLOBAL max.
+    // If the requirement is "correlative number for THAT TYPE", it implies independent sequences?
+    // "asignar automáticamente el siguiente número correlativo disponible para ese tipo de expediente"
+    // If Type A has EXP-001 and Type B has EXP-001, that's a collision if ID is fileNumber.
+    // ID IS fileNumber. So they must be unique globally OR have different prefixes.
+    // I will assume they share the sequence OR have different prefixes.
+    // Let's assume global sequence for "EXP-" for now to be safe, OR ask.
+    // But the prompt says "para ese tipo". 
+    // Let's look at `getPrefixes` usage in Dashboard.
+    // It seems prefixes are loaded.
+
+    // I'll implement a safe global increment for now to avoid ID collisions, 
+    // but filtered by the "prefix" if the type determines the prefix.
+    // If the type is just a category (GE-MAT), and the fileNumber is EXP-001, it's global.
+
+    const sortedCases = allCases.sort((a, b) => b.fileNumber.localeCompare(a.fileNumber, undefined, { numeric: true, sensitivity: 'base' }));
+
+    let nextNum = 1;
+    if (sortedCases.length > 0) {
+        const lastFileNumber = sortedCases[0].fileNumber;
+        const match = lastFileNumber.match(/(\d+)$/);
+        if (match) {
+            nextNum = parseInt(match[1], 10) + 1;
+        }
+    }
+
+    return `EXP-${String(nextNum).padStart(4, '0')}`;
+};
+
+export const createNewCase = async (category: FileCategory, subType?: string): Promise<CaseRecord> => {
+    const fileNumber = await getNextFileNumber(category);
+
+    const newCase: CaseRecord = {
+        fileNumber,
+        client: {
+            id: '',
+            surnames: '',
+            firstName: '',
+            nif: '',
+            address: '',
+            city: '',
+            province: '',
+            postalCode: '',
+            phone: '',
+            email: '',
+        },
+        vehicle: {
+            vin: '',
+            brand: '',
+            model: '',
+            year: '',
+            engineSize: '',
+            fuelType: '',
+        },
+        fileConfig: {
+            fileType: subType || '',
+            category: category,
+            responsibleUserId: '',
+            customValues: {}
+        },
+        economicData: {
+            lines: [],
+            subtotalAmount: 0,
+            vatAmount: 0,
+            totalAmount: 0
+        },
+        communications: [],
+        status: 'Pendiente Documentación',
+        attachments: [],
+        tasks: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        situation: 'Iniciado' // Default situation
+    };
+
+    await saveOrUpdateCase(newCase);
+    return newCase;
 };
 
 export const getSavedClients = async (): Promise<Client[]> => {
